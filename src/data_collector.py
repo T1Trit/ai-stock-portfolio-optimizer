@@ -6,34 +6,31 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Tuple
 import logging
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class StockDataCollector:
-    """
-    Класс для сбора и предобработки финансовых данных
-    """
+class DataCollector:
+    """Класс для сбора и обработки финансовых данных"""
     
-    def __init__(self, tickers: List[str], period: str = "5y"):
+    def __init__(self, tickers: List[str], period: str = "2y"):
         """
-        Инициализация коллектора данных
+        Инициализация сборщика данных
         
         Args:
             tickers: Список тикеров акций
-            period: Период для загрузки данных (1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max)
+            period: Период данных (1y, 2y, 5y, max)
         """
         self.tickers = tickers
         self.period = period
         
     def fetch_stock_data(self, ticker: str) -> pd.DataFrame:
         """
-        Получение исторических данных для одной акции
+        Получение исторических данных для одного тикера
         
         Args:
             ticker: Тикер акции
@@ -46,7 +43,7 @@ class StockDataCollector:
             data = stock.history(period=self.period)
             
             if data.empty:
-                logger.warning(f"Нет данных для {ticker}")
+                logger.warning(f"Нет данных для тикера {ticker}")
                 return pd.DataFrame()
             
             # Добавляем технические индикаторы
@@ -63,43 +60,39 @@ class StockDataCollector:
         Добавление технических индикаторов
         
         Args:
-            data: DataFrame с базовыми данными
+            data: DataFrame с ценами
             
         Returns:
             DataFrame с добавленными индикаторами
         """
-        # RSI (Relative Strength Index)
+        # Скользящие средние
+        data['SMA_20'] = data['Close'].rolling(window=20).mean()
+        data['SMA_50'] = data['Close'].rolling(window=50).mean()
+        data['SMA_200'] = data['Close'].rolling(window=200).mean()
+        
+        # EMA
+        data['EMA_12'] = data['Close'].ewm(span=12).mean()
+        data['EMA_26'] = data['Close'].ewm(span=26).mean()
+        
+        # MACD
+        data['MACD'] = data['EMA_12'] - data['EMA_26']
+        data['MACD_Signal'] = data['MACD'].ewm(span=9).mean()
+        
+        # RSI
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         data['RSI'] = 100 - (100 / (1 + rs))
         
-        # MACD (Moving Average Convergence Divergence)
-        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
-        data['MACD'] = exp1 - exp2
-        data['MACD_Signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
-        
         # Bollinger Bands
-        rolling_mean = data['Close'].rolling(window=20).mean()
-        rolling_std = data['Close'].rolling(window=20).std()
-        data['BB_Upper'] = rolling_mean + (rolling_std * 2)
-        data['BB_Lower'] = rolling_mean - (rolling_std * 2)
-        data['BB_Middle'] = rolling_mean
+        data['BB_Middle'] = data['Close'].rolling(window=20).mean()
+        std = data['Close'].rolling(window=20).std()
+        data['BB_Upper'] = data['BB_Middle'] + (std * 2)
+        data['BB_Lower'] = data['BB_Middle'] - (std * 2)
         
-        # Moving Averages
-        data['SMA_20'] = data['Close'].rolling(window=20).mean()
-        data['SMA_50'] = data['Close'].rolling(window=50).mean()
-        data['EMA_12'] = data['Close'].ewm(span=12, adjust=False).mean()
-        data['EMA_26'] = data['Close'].ewm(span=26, adjust=False).mean()
-        
-        # Volatility
-        data['Volatility'] = data['Close'].rolling(window=30).std()
-        
-        # Volume indicators
-        data['Volume_SMA'] = data['Volume'].rolling(window=20).mean()
-        data['Volume_Ratio'] = data['Volume'] / data['Volume_SMA']
+        # Волатильность
+        data['Volatility'] = data['Close'].pct_change().rolling(window=20).std() * np.sqrt(252)
         
         return data
     
@@ -140,14 +133,6 @@ class StockDataCollector:
                 'target_price': info.get('targetMeanPrice', None),
                 'recommendation': info.get('recommendationKey', 'none')
             }
-            
-            # Получаем финансовые отчеты
-            try:
-                fundamentals['quarterly_earnings'] = stock.quarterly_earnings.to_dict('records') if not stock.quarterly_earnings.empty else []
-                fundamentals['quarterly_revenue'] = stock.quarterly_financials.loc['Total Revenue'].to_dict() if 'Total Revenue' in stock.quarterly_financials.index else {}
-            except:
-                fundamentals['quarterly_earnings'] = []
-                fundamentals['quarterly_revenue'] = {}
             
             return fundamentals
             
